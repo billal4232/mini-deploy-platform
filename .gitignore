@@ -1,0 +1,21 @@
+# Terraform state — NEVER commit
+*.tfstate
+*.tfstate.*
+
+# Terraform working directory
+.terraform/
+
+# Override files (may contain secrets)
+*.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Crash logs
+crash.log
+crash.*.log
+
+# CLI config
+.terraformrc
+terraform.rc
