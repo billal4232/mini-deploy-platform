@@ -52,10 +52,17 @@ resource "aws_iam_role_policy" "ecs_task_execution" {
         ]
         Resource = "${aws_cloudwatch_log_group.ecs.arn}:*"
       },
+      # V2: Allow ECS agent to read the DB password from Secrets Manager at
+      # container startup. Scoped to the exact secret ARN — not wildcarded.
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = aws_secretsmanager_secret.db_password.arn
+      },
     ]
   })
 
-  depends_on = [aws_ecr_repository.app, aws_cloudwatch_log_group.ecs]
+  depends_on = [aws_ecr_repository.app, aws_cloudwatch_log_group.ecs, aws_secretsmanager_secret.db_password]
 }
 
 # ── Task Role ──────────────────────────────────────────────────────────────────

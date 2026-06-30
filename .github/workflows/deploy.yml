@@ -1,0 +1,114 @@
+# ── Mini Deploy Platform V2 — CI/CD Pipeline ────────────────────────────────────
+# Triggered on push to main. Authenticates via OIDC (no long-lived AWS keys),
+# builds + pushes a SHA-tagged Docker image, and updates the ECS service.
+#
+# Scope: image build/deploy ONLY. Infra changes (terraform apply) stay manual.
+
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+# OIDC requires id-token: write so GitHub can mint a token for AWS
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Check out the repo (needed to build the Docker image) ──────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Authenticate to AWS via OIDC (no access keys!) ────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-north-1
+
+      # ── 3. Log in to ECR ─────────────────────────────────────────────────
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── 4. Build and push Docker image tagged with the git SHA ────────────
+      # Using the SHA (not :latest) ensures every deploy has a unique,
+      # immutable tag — compatible with ECR's IMMUTABLE setting.
+      - name: Build and push image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: mini-deploy-platform-app
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" app/
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      # ── 5. Deploy to ECS ─────────────────────────────────────────────────
+      # Registers a new task-definition revision with the new image, then
+      # forces the service to roll out the new revision.
+      - name: Deploy to ECS
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: mini-deploy-platform-app
+          IMAGE_TAG: ${{ github.sha }}
+          ECS_CLUSTER: mini-deploy-platform-cluster
+          ECS_SERVICE: mini-deploy-platform-svc
+          ECS_TASK_FAMILY: mini-deploy-platform-app
+        run: |
+          set -euo pipefail
+
+          echo "Fetching current task definition for family: $ECS_TASK_FAMILY"
+          TASK_DEF=$(aws ecs describe-task-definition --task-definition "$ECS_TASK_FAMILY")
+          CURRENT_REV=$(echo "$TASK_DEF" | jq -r '.taskDefinition.revision')
+
+          echo "Current revision: $CURRENT_REV"
+
+          # Swap the image in every container definition (safety: handles sidecars)
+          NEW_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "New image: $NEW_IMAGE"
+
+          NEW_CONTAINER_DEFS=$(echo "$TASK_DEF" | jq -c --arg IMG "$NEW_IMAGE" \
+            '.taskDefinition.containerDefinitions | map(.image = $IMG)')
+
+          # Copy required fields from the existing definition
+          EXEC_ROLE=$(echo "$TASK_DEF" | jq -r '.taskDefinition.executionRoleArn')
+          TASK_ROLE=$(echo "$TASK_DEF" | jq -r '.taskDefinition.taskRoleArn')
+          CPU=$(echo "$TASK_DEF"      | jq -r '.taskDefinition.cpu')
+          MEMORY=$(echo "$TASK_DEF"   | jq -r '.taskDefinition.memory')
+
+          # Register a new revision (same family, new image)
+          NEW_TASK_DEF=$(aws ecs register-task-definition \
+            --family "$ECS_TASK_FAMILY" \
+            --container-definitions "$NEW_CONTAINER_DEFS" \
+            --execution-role-arn "$EXEC_ROLE" \
+            --task-role-arn "$TASK_ROLE" \
+            --network-mode awsvpc \
+            --requires-compatibilities FARGATE \
+            --cpu "$CPU" \
+            --memory "$MEMORY" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "Registered new task definition: $NEW_TASK_DEF"
+
+          # Update the service to the new revision + force a rolling deploy
+          echo "Updating ECS service: $ECS_CLUSTER / $ECS_SERVICE"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$NEW_TASK_DEF" \
+            --force-new-deployment
+
+          # Wait for the deployment to stabilise (times out after 10 min)
+          echo "Waiting for deployment to stabilise..."
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE"
+
+          echo "Deploy complete! Image: $NEW_IMAGE"

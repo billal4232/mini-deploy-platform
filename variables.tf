@@ -87,7 +87,7 @@ variable "db_username" {
 }
 
 variable "db_password" {
-  description = "RDS master password — V2 will move this to Secrets Manager"
+  description = "RDS master password — V2 stores this in Secrets Manager; ECS reads it at runtime via valueFrom"
   type        = string
   sensitive   = true
 }

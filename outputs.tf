@@ -49,3 +49,10 @@ output "public_subnet_ids" {
   description = "Public subnet IDs (ALB, NAT)"
   value       = aws_subnet.public[*].id
 }
+
+# ── V2 outputs ──────────────────────────────────────────────────────────────
+
+output "github_actions_role_arn" {
+  description = "ARN of the IAM role for GitHub Actions OIDC. Copy this into GitHub Secrets as AWS_ROLE_ARN."
+  value       = aws_iam_role.github_actions.arn
+}

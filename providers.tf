@@ -25,7 +25,7 @@ terraform {
 }
 
 provider "aws" {
-  region = var.region
+  region  = var.region
   profile = "limonlab"
   default_tags {
     tags = {
