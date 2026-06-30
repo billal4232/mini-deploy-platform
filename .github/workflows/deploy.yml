@@ -8,8 +8,10 @@ name: Deploy
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/deploy.yml'
 
 # OIDC requires id-token: write so GitHub can mint a token for AWS
 permissions:
