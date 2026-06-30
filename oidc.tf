@@ -81,13 +81,15 @@ resource "aws_iam_role_policy" "github_actions" {
       },
       # ECS: read current task definition and register new revisions (any revision
       # within the app family — needed because CI/CD creates revision N+1 each push)
+      # DescribeTaskDefinition cannot be resource-scoped (AWS limitation) — needs "*"
+      # Same is true for RegisterTaskDefinition as well
       {
         Effect = "Allow"
         Action = [
           "ecs:DescribeTaskDefinition",
           "ecs:RegisterTaskDefinition",
         ]
-        Resource = "arn:aws:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:task-definition/${var.project_name}-${var.app_name}:*"
+        Resource = "*"
       },
       # ECS: update and describe ONLY the app service (not every service in the cluster)
       {
@@ -98,6 +100,17 @@ resource "aws_iam_role_policy" "github_actions" {
         ]
         Resource = "arn:aws:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:service/${var.project_name}-cluster/${var.project_name}-svc"
       },
+      # Allow the pipeline to pass the ECS roles to the task definition it registers.
+      # PassRole is required because registering a task def that references these roles
+      # counts as "passing" them to ECS. Scoped to ONLY these two roles.
+      {
+        Effect = "Allow"
+        Action = ["iam:PassRole"]
+        Resource = [
+          aws_iam_role.ecs_task_execution.arn,
+          aws_iam_role.ecs_task.arn,
+        ]
+      }
     ]
   })
 }

@@ -34,10 +34,16 @@ resource "aws_iam_role_policy" "ecs_task_execution" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # GetAuthorizationToken cannot be resource-scoped — needs "*"
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      # The actual image pull — scoped to your specific repo
       {
         Effect = "Allow"
         Action = [
-          "ecr:GetAuthorizationToken",
           "ecr:BatchCheckLayerAvailability",
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchGetImage",
