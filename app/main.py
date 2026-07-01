@@ -8,7 +8,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return "Mini Deploy Platform — V2 OK", 200
+    return "Mini Deploy Platform — V2 OK. Adding one more to line to check with lambda", 200
 
 
 @app.route("/health")
