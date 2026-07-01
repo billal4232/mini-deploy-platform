@@ -104,6 +104,13 @@ variable "db_port" {
   default     = 5432
 }
 
+# ── V3: Notifications ────────────────────────────────────────────────────────
+
+variable "notification_email" {
+  description = "Email address for SNS deploy notifications (must click confirmation link in the AWS email)"
+  type        = string
+}
+
 # ── DNS / TLS ──────────────────────────────────────────────────────────────────
 
 variable "domain_name" {

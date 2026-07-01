@@ -1,0 +1,117 @@
+# Mini Deployment Platform — V3
+
+**V3 adds an asynchronous deploy engine.** Instead of only deploying via a git push
+(the V2 pipeline), a deploy can now be triggered by sending a message to a queue. A
+serverless worker picks it up and rolls out a specific image to ECS.
+
+Builds on V1 + V2. V3 only **adds** — the existing pipeline is untouched and still works.
+
+---
+
+## The flow
+
+```
+deploy request (message) → SQS queue → Lambda worker → ECS (deploy specific image) → SNS notify
+                                            │
+                              failed 3× → Dead-Letter Queue
+```
+
+A message is small JSON: `{ "image_tag": "<git-sha>", "requested_by": "..." }`.
+The `image_tag` names a specific image already in ECR — the worker deploys *that* version.
+
+---
+
+## What each piece does
+
+| Piece | Role |
+|---|---|
+| **SQS queue** | Holds deploy requests. Decouples "ask for a deploy" from "do the deploy." |
+| **Lambda worker** (Python) | Reads a message, validates the image, registers a new task-def revision with that image, updates the ECS service, notifies SNS. |
+| **Dead-Letter Queue (DLQ)** | Messages that fail 3× land here — so failed deploys are visible, not lost. |
+| **SNS topic** | Emails a notification when a deploy is triggered (email subscription must be confirmed once). |
+
+---
+
+## How V3 relates to V2
+
+- **V2 pipeline** = the CI path: push code → build → deploy. Unchanged.
+- **V3 async flow** = a parallel path: send a message → deploy. New.
+
+Both end up redeploying the same ECS service; they're just different triggers. A future
+frontend "Deploy" button will drop a message into the SQS queue to drive this flow.
+
+---
+
+## What the worker actually does (per message)
+
+1. **Validate** the image tag exists in ECR (`ecr:DescribeImages`). If not → fail loudly → DLQ.
+2. **Describe** the current task definition (to copy its settings).
+3. **Swap** only the container image to the requested tag.
+4. **Register** a new task-definition revision.
+5. **Update** the ECS service to that new revision.
+6. **Notify** via SNS.
+
+On any failure it **raises**, so SQS retries and the message eventually reaches the DLQ.
+(SNS-publish failure is the one exception — it's logged but not retried, since the deploy
+already happened.)
+
+---
+
+## Key design decisions & gotchas
+
+- **The image tag genuinely controls the deploy.** The first cut of the worker ignored the
+  tag and just restarted the service (`forceNewDeployment`). Fixed: it now registers a new
+  revision pointing at the *specific* image, so the tag means something.
+
+- **Pre-deploy image validation (defense in depth).** Without it, a non-existent tag passed
+  validation-free: the Lambda reported success, but the ECS task then failed with
+  `CannotPullContainerError` — an **invisible failure** that appears only in ECS task stop
+  reasons, not in the Lambda log or DLQ. The worker now checks ECR *before* deploying, so a
+  bad tag fails at the Lambda (logged + DLQ) and no broken revision is ever registered.
+  A future frontend should *also* only offer real tags — validate at every layer that input
+  can enter.
+
+- **IAM scoping (same rules as V2's pipeline role):**
+  `ecs:DescribeTaskDefinition` / `ecs:RegisterTaskDefinition` cannot be resource-scoped →
+  `"*"`. `iam:PassRole` scoped to only the two ECS roles (registering a task def that
+  references them counts as passing them). `ecr:DescribeImages` and `ecs:UpdateService`
+  scoped to the specific repo / service.
+
+- **SQS visibility timeout (90s) > Lambda timeout (30s)** so a message being processed isn't
+  re-delivered to a second Lambda mid-run (which would double-deploy).
+
+- **Secrets Manager on destroy/rebuild:** a deleted secret lingers in a recovery window and
+  its name stays reserved — rebuilding hits "already scheduled for deletion." Force-delete to
+  reclaim the name.
+
+---
+
+## Test it
+
+```bash
+# find a real image tag
+aws ecr list-images --repository-name mini-deploy-platform-app --profile limonlab
+
+# send a deploy request
+aws sqs send-message \
+  --queue-url $(aws sqs get-queue-url --queue-name mini-deploy-platform-deploy-queue --query QueueUrl --output text --profile limonlab) \
+  --message-body '{"image_tag": "<REAL_SHA>", "requested_by": "me"}' \
+  --profile limonlab
+
+# watch it work
+aws logs tail /aws/lambda/mini-deploy-platform-deploy-worker --follow --profile limonlab
+```
+
+A **bad** tag should fail at the Lambda and land in the DLQ (not deploy). A **real** tag
+should register a new revision and roll it out.
+
+---
+
+## Files added in V3
+
+```
+sqs.tf                     # deploy queue + dead-letter queue (redrive policy, maxReceiveCount=3)
+lambda.tf                  # worker function, SQS trigger, IAM role/policy, env vars
+sns.tf                     # topic + email subscription
+lambda/deploy_worker.py    # the worker (validate → describe → swap image → register → update → notify)
+```

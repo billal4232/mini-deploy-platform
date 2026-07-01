@@ -16,6 +16,9 @@ override.tf.json
 crash.log
 crash.*.log
 
+# Lambda build artifact
+lambda/*.zip
+
 # CLI config
 .terraformrc
 terraform.rc

@@ -12,6 +12,11 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    # V3: archive provider for packaging the Lambda .zip
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.7"
+    }
   }
 
   backend "s3" {
